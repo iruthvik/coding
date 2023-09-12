@@ -30,7 +30,9 @@ object StreamingJob {
     // Function to get the latest date partition path in GCS
     def getLatestDatePartitionPath(basePath: String): String = {
       // List the GCS folders (date partitions)
-      val datePartitions = spark.read.text(basePath).as[String].collect()
+      val gcs = "gs://"
+      val trimmedBasePath = if (basePath.startsWith(gcs)) basePath.drop(gcs.length) else basePath
+      val datePartitions = spark.read.text(trimmedBasePath).as[String].collect()
 
       if (datePartitions.isEmpty) {
         throw new RuntimeException("No date partitions found in GCS path.")
@@ -45,7 +47,7 @@ object StreamingJob {
     }
 
     // Get the base reference path (GCS path without date partition)
-    val baseReferencePath = "gs://internal/cpa/date=yyyyMMdd" // Specify the base path to date partitions
+    val baseReferencePath = "gs://internal/cpa" // Specify the base path to date partitions
 
     // Schedule the updateReferenceData function to run periodically (e.g., every 1 hour)
     val executor = Executors.newScheduledThreadPool(1)
