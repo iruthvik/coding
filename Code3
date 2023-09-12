@@ -1,0 +1,75 @@
+import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.streaming.Trigger
+
+object StreamingJob {
+  def main(args: Array[String]): Unit = {
+    val spark = SparkSession.builder()
+      .appName("StreamingJob")
+      .getOrCreate()
+
+    // Define your schema
+    val ElineRefschema = ???
+
+    import spark.implicits._
+
+    // Function to update reference data
+    def updateReferenceData(referencePath: String): Unit = {
+      try {
+        val newReferenceDF = spark.read
+          .option("delimiter", "|")
+          .schema(ElineRefschema)
+          .csv(referencePath)
+
+        // Perform any necessary transformations on newReferenceDF
+
+        // Register the new reference DataFrame as a temporary view
+        newReferenceDF.createOrReplaceTempView("reference_data")
+      } catch {
+        case e: Exception =>
+          println(s"Error updating reference data: ${e.getMessage}")
+      }
+    }
+
+    // Get the base reference path (GCS path without date partition)
+    val baseReferencePath = "gs://internal/cpa" // Specify the base path to date partitions
+
+    // Define a streaming source (e.g., Pulsar)
+    val streamingDF = spark.readStream
+      .format("pulsar")
+      .option("topic", "cpa")
+      .load()
+
+    // Define your streaming query logic
+    val query = streamingDF
+      .writeStream
+      .trigger(Trigger.ProcessingTime("1 hour")) // Adjust the interval as needed
+      .foreachBatch { (batchDF, batchId) =>
+        // Get the latest date partition dynamically
+        val latestDatePartition = getLatestDatePartitionPath(baseReferencePath)
+
+        // Update the reference data with the latest date partition
+        updateReferenceData(latestDatePartition)
+
+        // Perform your join and other streaming operations using batchDF
+        val resultDF = batchDF.join(spark.table("reference_data"), $"streamingColumn" === $"referenceColumn")
+
+        // Output or further process resultDF as needed
+        // For example, you can write it to a sink or perform additional transformations.
+      }
+      .start()
+
+    // Wait for the streaming query to terminate
+    query.awaitTermination()
+
+    spark.stop()
+  }
+
+  // Function to get the latest date partition path in GCS
+  def getLatestDatePartitionPath(basePath: String): String = {
+    // Implement the logic to retrieve the latest date partition path here
+    // ...
+
+    // Example: Return a hardcoded path for testing purposes
+    "gs://internal/cpa/date=20230910" // Include the latest partition in the path
+  }
+}
