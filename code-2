@@ -1,0 +1,87 @@
+import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.functions._
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+
+object StreamingJob {
+  def main(args: Array[String]): Unit = {
+    val spark = SparkSession.builder()
+      .appName("StreamingJob")
+      .getOrCreate()
+
+    // Define your schema
+    val ElineRefschema = ???
+
+    import spark.implicits._
+
+    // Function to update reference data
+    def updateReferenceData(referencePath: String): Unit = {
+      val newReferenceDF = spark.read
+        .option("delimiter", "|")
+        .schema(ElineRefschema)
+        .csv(referencePath)
+
+      // Perform any necessary transformations on newReferenceDF
+
+      // Register the new reference DataFrame as a temporary view
+      newReferenceDF.createOrReplaceTempView("reference_data")
+    }
+
+    // Function to get the latest date partition path in GCS
+    def getLatestDatePartitionPath(basePath: String): String = {
+      // List the GCS folders (date partitions)
+      val datePartitions = spark.read.text(basePath).as[String].collect()
+
+      if (datePartitions.isEmpty) {
+        throw new RuntimeException("No date partitions found in GCS path.")
+      }
+
+      // Sort the date partitions by folder name (which is the date) in descending order
+      val sortedDatePartitions = datePartitions.sorted.reverse
+
+      val latestDatePartition = sortedDatePartitions.head
+
+      s"$basePath/$latestDatePartition" // Include the latest partition in the path
+    }
+
+    // Get the base reference path (GCS path without date partition)
+    val baseReferencePath = "gs://internal/cpa/date=yyyyMMdd" // Specify the base path to date partitions
+
+    // Schedule the updateReferenceData function to run periodically (e.g., every 1 hour)
+    val executor = Executors.newScheduledThreadPool(1)
+
+    executor.scheduleAtFixedRate(new Runnable {
+      def run(): Unit = {
+        // Get the latest date partition dynamically
+        val latestDatePartition = getLatestDatePartitionPath(baseReferencePath)
+
+        // Update the reference data with the latest date partition
+        updateReferenceData(latestDatePartition)
+      }
+    }, 0, 1, TimeUnit.HOURS) // Adjust the scheduling interval as needed
+
+    // Define your streaming source (e.g., Pulsar)
+    val streamingDF = spark.readStream
+      .format("pulsar")
+      .option("topic", "cpa")
+      .load()
+
+    // Perform your join and other streaming operations
+    val resultDF = streamingDF.join(spark.table("reference_data"), $"streamingColumn" === $"referenceColumn")
+
+    // Output or further process resultDF as needed
+
+    // Start the streaming query
+    val query = resultDF.writeStream
+      .format("console") // You can change this to the desired output sink
+      .start()
+
+    // Wait for the streaming query to terminate
+    query.awaitTermination()
+
+    // Stop the executor (should be done when your application is done)
+    executor.shutdown()
+
+    spark.stop()
+  }
+}
