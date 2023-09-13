@@ -1,0 +1,89 @@
+import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.functions._
+import org.apache.spark.sql.streaming.Trigger
+import com.google.cloud.storage.{Blob, BlobId, Storage, StorageOptions}
+import scala.collection.JavaConverters._
+
+object StreamingJob {
+  def main(args: Array[String]): Unit = {
+    val spark = SparkSession.builder()
+      .appName("StreamingJob")
+      .getOrCreate()
+
+    // Define your schema
+    val ElineRefschema = ???
+
+    import spark.implicits._
+
+    // Declare an empty DataFrame for reference data
+    var referenceDF = spark.emptyDataFrame
+
+    // Function to update reference data from GCS
+    def refreshReference(gcsBucket: String, gcsPath: String): Unit = {
+      referenceDF.unpersist()
+
+      // Initialize GCS client
+      val storage: Storage = StorageOptions.getDefaultInstance.getService
+
+      // List all blobs (files and directories) in the GCS directory
+      val blobs: Seq[Blob] = storage.list(gcsBucket, BlobListOption.prefix(gcsPath)).iterateAll().asScala.toSeq
+
+      // Find the latest directory (blob) by comparing their names (assuming date-based naming)
+      val latestDirectory: Option[Blob] = blobs.collect {
+        case blob if blob.isDirectory => blob
+      }.maxByOption(_.getName)
+
+      latestDirectory match {
+        case Some(latestDir) =>
+          // Construct the path to the latest directory
+          val latestDirPath = s"gs://$gcsBucket/${latestDir.getName}"
+
+          // Read reference data from the latest directory
+          val newReferenceDF = spark.read
+            .option("delimiter", "|")
+            .schema(ElineRefschema)
+            .csv(latestDirPath)
+
+          // Perform any necessary transformations on newReferenceDF
+
+          // Persist the updated reference DataFrame
+          referenceDF = newReferenceDF.persist()
+
+        case None =>
+          println("No reference data found in GCS.")
+      }
+    }
+
+    // Initial reference data load
+    val gcsBucket = "internal"
+    val gcsBasePath = "cpa/date=" // Adjust the base path as needed
+    refreshReference(gcsBucket, gcsBasePath)
+
+    // Define a streaming source (e.g., Pulsar)
+    val streamingDF = spark.readStream
+      .format("pulsar")
+      .option("topic", "cpa")
+      .load()
+
+    // Define your streaming query logic
+    val query = streamingDF
+      .writeStream
+      .trigger(Trigger.ProcessingTime("1 day")) // Adjust the interval as needed
+      .foreachBatch { (_, _) =>
+        // Refresh the reference data in each batch
+        refreshReference(gcsBucket, gcsBasePath)
+
+        // Perform your join and other streaming operations using referenceDF
+        val resultDF = streamingDF.join(referenceDF, $"streamingColumn" === $"referenceColumn")
+
+        // Output or further process resultDF as needed
+        // For example, you can write it to a sink or perform additional transformations.
+      }
+      .start()
+
+    // Wait for the streaming query to terminate
+    query.awaitTermination()
+
+    spark.stop()
+  }
+}
