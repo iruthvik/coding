@@ -1,0 +1,36 @@
+import org.apache.spark.sql.streaming.Trigger
+
+// Define a streaming source (e.g., Pulsar)
+val streamingDF = spark.readStream
+  .format("pulsar")
+  .option("topic", "cpa")
+  .load()
+
+// Define a streaming query to continuously process the streaming data
+val streamingQuery = streamingDF
+  .writeStream
+  .trigger(Trigger.ProcessingTime("1 minute")) // Adjust the interval as needed
+  .foreachBatch { (_, _) =>
+    // Perform your join and other streaming operations using referenceDF
+    val resultDF = streamingDF.join(referenceDF, $"streamingColumn" === $"referenceColumn")
+
+    // Output or further process resultDF as needed
+    // For example, you can write it to an ORC sink or perform additional transformations.
+  }
+  .start()
+
+// Define a separate streaming query to refresh the reference data daily
+val referenceDataQuery = streamingDF
+  .writeStream
+  .trigger(Trigger.ProcessingTime("1 day")) // Refresh daily
+  .foreachBatch { (_, _) =>
+    // Refresh the reference data from GCS
+    refreshReference(gcsBucket, gcsBasePath)
+  }
+  .start()
+
+// Wait for the streaming queries to terminate
+streamingQuery.awaitTermination()
+referenceDataQuery.awaitTermination()
+
+spark.stop()
